@@ -1,7 +1,7 @@
 {
   "name": "usage-bar",
   "displayName": "Usage Bar",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A one-line usage bar above the prompt: 5-hour, weekly and per-model plan limits with reset countdowns, plus the session's tokens and cost.",
   "author": {
     "name": "Murat Karagozgil",
@@ -10,6 +10,7 @@
   "homepage": "https://github.com/MuratKaragozgil/claude-code-usage-bar",
   "repository": "https://github.com/MuratKaragozgil/claude-code-usage-bar",
   "license": "MIT",
+  "privacyPolicyUrl": "https://github.com/MuratKaragozgil/claude-code-usage-bar/blob/main/PRIVACY.md",
   "keywords": ["usage", "rate-limits", "plan-limits", "tokens", "cost", "mod"],
   "types": "./types/index.d.ts"
 }

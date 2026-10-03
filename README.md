@@ -113,7 +113,6 @@ The tests mount the band on the terminal and desktop surfaces, with the usage en
 
 ```text
 .claude-plugin/plugin.json        the plugin manifest
-.claude-plugin/icon.png           the directory listing's icon
 .claude-plugin/marketplace.json   makes this repository a one-plugin marketplace
 hooks/hooks.json                  points Claude Code at the module
 hooks/register.tsx                the whole mod
