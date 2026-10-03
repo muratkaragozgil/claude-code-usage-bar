@@ -1,4 +1,4 @@
-import type { EngineInterface, Register, SessionRateLimit, TurnUsage } from 'claude-code'
+import type { EngineInterface, On, SessionRateLimit, TurnUsage } from 'claude-code'
 
 import type { ModelWindow, Remote, Snapshot, Tokens, Window } from '../types'
 
@@ -18,7 +18,10 @@ const REMOTE_MIN_GAP_MS = 60_000
 const REMOTE_BACKOFF_MS = 10 * 60_000
 
 // Fetch bookkeeping only; nothing draws from it, so a reload may reset it.
-let nextRemoteAt = 0
+// Requests go out at least a minute apart (ten minutes after a refusal), and
+// the regular refresh is due five minutes after the last one.
+let nextAllowedAt = 0
+let nextDueAt = 0
 let isFetching = false
 let hasReportedFailure = false
 
@@ -119,11 +122,12 @@ async function toggleHidden($: EngineInterface): Promise<boolean> {
 // Reads the plan's limits, per-model weekly ones (Fable) included, from the
 // endpoint behind the app's usage card and /usage. The API's rate-limit
 // headers carry only the 5-hour and weekly windows.
-async function refreshRemote($: EngineInterface): Promise<void> {
+async function refreshRemote($: EngineInterface, isScheduled: boolean): Promise<void> {
   const at = await $.clock.now()
-  if (isFetching || at < nextRemoteAt) return
+  if (isFetching || at < nextAllowedAt || (isScheduled && at < nextDueAt)) return
   isFetching = true
-  nextRemoteAt = at + REMOTE_MIN_GAP_MS
+  nextAllowedAt = at + REMOTE_MIN_GAP_MS
+  nextDueAt = at + REMOTE_EVERY_MS
   let failure: string | null = null
 
   try {
@@ -137,11 +141,11 @@ async function refreshRemote($: EngineInterface): Promise<void> {
       if (res.ok) {
         await $.state.set(REMOTE, parseRemote(JSON.parse(res.text)))
       } else {
-        if ([401, 403, 429].includes(res.status)) nextRemoteAt = at + REMOTE_BACKOFF_MS
+        if ([401, 403, 429].includes(res.status)) nextAllowedAt = nextDueAt = at + REMOTE_BACKOFF_MS
         failure = `usage endpoint answered ${res.status}`
       }
     } else {
-      nextRemoteAt = at + REMOTE_BACKOFF_MS
+      nextAllowedAt = nextDueAt = at + REMOTE_BACKOFF_MS
       failure = auth ? 'signed in with an API key' : 'no claude.ai login'
     }
   } catch (error) {
@@ -268,23 +272,28 @@ function fitRow(items: Item[], room: number, m: Metrics): Shown[] {
   return row
 }
 
-export const register: Register = on => {
+export function register(on: On): void {
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'usage-bar',
-      description: 'Show or hide the usage bar above the prompt',
-    })
-
     const usage = await $.session.usage()
     await $.state.set(SNAP, toSnapshot(usage))
     await tick($)
 
-    // Keeps the reset countdowns moving between turns.
-    $.clock.every(TICK_MS, () => void tick($))
+    // Every 30 seconds: move the countdowns, and refresh the plan limits when due.
+    $.clock.every(TICK_MS, async () => {
+      await tick($)
+      await refreshRemote($, true)
+    })
 
-    // Not awaited: the first prompt should not wait on the network.
-    void refreshRemote($)
-    $.clock.every(REMOTE_EVERY_MS, () => void refreshRemote($))
+    // The first refresh, right after the session starts, without holding it up.
+    $.clock.after(1, async () => {
+      await refreshRemote($, true)
+    })
+
+    // Last, as registering throws when another plugin already took the name.
+    await $.command.register({
+      name: 'usage-bar',
+      description: 'Show or hide the usage bar above the prompt',
+    })
 
     return next(e)
   })
@@ -296,7 +305,7 @@ export const register: Register = on => {
 
     // A window moved: the per-model ones may have too (at most once a minute).
     if (e.changed.includes('rateLimits')) {
-      await refreshRemote($)
+      await refreshRemote($, false)
     }
 
     return result
@@ -319,7 +328,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'usage-bar' }, async $ => {
+  on('command.run', { command: 'usage-bar' }, async ($, e) => {
     const isNowHidden = await toggleHidden($)
 
     return { text: isNowHidden ? 'Usage bar hidden.' : 'Usage bar shown.' }

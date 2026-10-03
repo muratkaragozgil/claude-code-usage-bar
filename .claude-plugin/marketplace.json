@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "A one-line usage bar above the Claude Code prompt.",
-    "version": "1.0.3"
+    "version": "1.0.4"
   },
   "plugins": [
     {
       "name": "usage-bar",
       "source": "./",
       "description": "A one-line usage bar above the prompt: 5-hour, weekly and per-model plan limits with reset countdowns, plus the session's tokens and cost.",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "author": {
         "name": "Murat Karagozgil",
         "url": "https://github.com/MuratKaragozgil"

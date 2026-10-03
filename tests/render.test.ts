@@ -1,5 +1,5 @@
 import type { On } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 const props = (bodyColumns: number) => ({
@@ -28,7 +28,7 @@ const USAGE = {
 // session that measured once and finished one turn.
 async function seed($: Engine, on: On, status: number) {
   const urls: string[] = []
-  mock.clock(on, { now: START })
+  on('clock.now', () => ({ value: START }))
   on('session.measure', ($, e) => ({ changed: e.changed }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('session.authorize', () => ({ value: { handle: 'test-handle', kind: 'bearer' as const } }))

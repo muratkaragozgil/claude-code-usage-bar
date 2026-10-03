@@ -65,7 +65,7 @@ Each hook, and what it does with what it sees:
 
 | Hook | What it does |
 | --- | --- |
-| `session.start` | Registers the `/usage-bar` command and reads the session's usage figures from Claude Code. Starts two timers: one moves the countdowns every 30 seconds, one refreshes the plan limits every five minutes. Passes the event on unchanged. |
+| `session.start` | Reads the session's usage figures from Claude Code and registers the `/usage-bar` command. Starts a timer that moves the countdowns every 30 seconds and refreshes the plan limits every five minutes, the first time right after the session starts. Passes the event on unchanged. |
 | `session.measure` | Copies the 5-hour and weekly percentages, their reset times and the session cost into the bar. Passes the event on unchanged. |
 | `turn.complete` | Adds the turn's token counts to the session totals, subagent turns included. It reads only the counts, never the text of the turn. Passes the event on unchanged. |
 | `session.end` | On `/clear`, sets the token totals back to zero. Passes the event on unchanged. |
