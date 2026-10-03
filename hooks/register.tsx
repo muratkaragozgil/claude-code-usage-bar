@@ -1,28 +1,18 @@
-import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
+import type { EngineInterface, Register, SessionRateLimit, TurnUsage } from 'claude-code'
 
 import type { ModelWindow, Remote, Snapshot, Tokens, Window } from '../types'
 
-const snap = atom({ plugin: 'usage-bar', key: 'snap' } as const, {
-  fiveHour: null,
-  sevenDay: null,
-  costUsd: null,
-})
-const remote = atom({ plugin: 'usage-bar', key: 'remote' } as const, null)
-const tokens = atom({ plugin: 'usage-bar', key: 'tokens' } as const, {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-})
-const now = atom({ plugin: 'usage-bar', key: 'now' } as const, 0)
-const isHidden = atom({ plugin: 'usage-bar', key: 'isHidden' } as const, false)
+// Where the plugin keeps its values in $.state, one address per value.
+const SNAP = { plugin: 'usage-bar', key: 'snap' } as const
+const REMOTE = { plugin: 'usage-bar', key: 'remote' } as const
+const TOKENS = { plugin: 'usage-bar', key: 'tokens' } as const
+const NOW = { plugin: 'usage-bar', key: 'now' } as const
+const IS_HIDDEN = { plugin: 'usage-bar', key: 'isHidden' } as const
+
+const NO_SNAP: Snapshot = { fiveHour: null, sevenDay: null, costUsd: null }
+const NO_TOKENS: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
 const TICK_MS = 30_000
-
-// The endpoint the app's usage card and /usage read: the only source of the
-// per-model weekly limits (Fable), which the API's rate-limit headers omit.
-const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const REMOTE_EVERY_MS = 5 * 60_000
 const REMOTE_MIN_GAP_MS = 60_000
 const REMOTE_BACKOFF_MS = 10 * 60_000
@@ -31,13 +21,6 @@ const REMOTE_BACKOFF_MS = 10 * 60_000
 let nextRemoteAt = 0
 let isFetching = false
 let hasReportedFailure = false
-
-// Says once per load, in the transcript, why the per-model limits are missing.
-function reportFailure($: EngineInterface, reason: string): void {
-  if (hasReportedFailure) return
-  hasReportedFailure = true
-  $.ui.log(`usage-bar: per-model limits unavailable (${reason}); 5h and 7d still come from the session`)
-}
 
 type Gauge = { pct: number; leftMs: number | null }
 
@@ -99,38 +82,79 @@ function parseRemote(body: unknown): Remote {
   }
 }
 
+// Reads the clock into NOW, which keeps the reset countdowns moving.
+async function tick($: EngineInterface): Promise<void> {
+  const at = await $.clock.now()
+  await $.state.set(NOW, at)
+}
+
+// Adds one turn's token counts to the session totals. A subagent's turn and the
+// main one can finish together, so the write is compare-and-set.
+async function addTokens($: EngineInterface, usage: TurnUsage): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const held = await $.state.get(TOKENS)
+    const sum = held.value ?? NO_TOKENS
+    const written = await $.state.set(
+      TOKENS,
+      {
+        input: sum.input + usage.input_tokens,
+        output: sum.output + usage.output_tokens,
+        cacheRead: sum.cacheRead + usage.cache_read_input_tokens,
+        cacheWrite: sum.cacheWrite + usage.cache_creation_input_tokens,
+      },
+      { ifVersion: held.version },
+    )
+    if (written.isSet) return
+  }
+}
+
+async function toggleHidden($: EngineInterface): Promise<boolean> {
+  const held = await $.state.get(IS_HIDDEN)
+  const isNowHidden = held.value !== true
+  await $.state.set(IS_HIDDEN, isNowHidden)
+
+  return isNowHidden
+}
+
+// Reads the plan's limits, per-model weekly ones (Fable) included, from the
+// endpoint behind the app's usage card and /usage. The API's rate-limit
+// headers carry only the 5-hour and weekly windows.
 async function refreshRemote($: EngineInterface): Promise<void> {
   const at = await $.clock.now()
   if (isFetching || at < nextRemoteAt) return
   isFetching = true
   nextRemoteAt = at + REMOTE_MIN_GAP_MS
+  let failure: string | null = null
 
   try {
     // A handle for the session's own login; the token never reaches this module.
     const auth = await $.session.authorize()
-    if (auth?.kind !== 'bearer') {
+    if (auth?.kind === 'bearer') {
+      const res = await $.http.fetch('https://api.anthropic.com/api/oauth/usage', {
+        headers: { 'Content-Type': 'application/json', 'anthropic-beta': 'oauth-2025-04-20' },
+        auth: auth.handle,
+      })
+      if (res.ok) {
+        await $.state.set(REMOTE, parseRemote(JSON.parse(res.text)))
+      } else {
+        if ([401, 403, 429].includes(res.status)) nextRemoteAt = at + REMOTE_BACKOFF_MS
+        failure = `usage endpoint answered ${res.status}`
+      }
+    } else {
       nextRemoteAt = at + REMOTE_BACKOFF_MS
-      reportFailure($, auth ? 'signed in with an API key' : 'no claude.ai login')
-      return
+      failure = auth ? 'signed in with an API key' : 'no claude.ai login'
     }
-
-    const res = await $.http.fetch(USAGE_URL, {
-      headers: { 'Content-Type': 'application/json', 'anthropic-beta': 'oauth-2025-04-20' },
-      auth: auth.handle,
-    })
-    if (!res.ok) {
-      if ([401, 403, 429].includes(res.status)) nextRemoteAt = at + REMOTE_BACKOFF_MS
-      reportFailure($, `usage endpoint answered ${res.status}`)
-      return
-    }
-
-    const parsed = parseRemote(JSON.parse(res.text))
-    await update($, remote, () => parsed)
   } catch (error) {
     // Network or parse trouble: keep the last reading and try again later.
-    reportFailure($, error instanceof Error ? error.message : String(error))
+    failure = error instanceof Error ? error.message : String(error)
   } finally {
     isFetching = false
+  }
+
+  // Says once per load, in the transcript, why the per-model limits are missing.
+  if (failure !== null && !hasReportedFailure) {
+    hasReportedFailure = true
+    $.ui.log(`usage-bar: per-model limits unavailable (${failure}); 5h and 7d still come from the session`)
   }
 }
 
@@ -252,14 +276,11 @@ export const register: Register = on => {
     })
 
     const usage = await $.session.usage()
-    await update($, snap, () => toSnapshot(usage))
-    const t = await $.clock.now()
-    await update($, now, () => t)
+    await $.state.set(SNAP, toSnapshot(usage))
+    await tick($)
 
     // Keeps the reset countdowns moving between turns.
-    $.clock.every(TICK_MS, () => {
-      void $.clock.now().then(at => update($, now, () => at))
-    })
+    $.clock.every(TICK_MS, () => void tick($))
 
     // Not awaited: the first prompt should not wait on the network.
     void refreshRemote($)
@@ -269,12 +290,11 @@ export const register: Register = on => {
   })
 
   on('session.measure', async ($, e, next) => {
-    await update($, snap, () => toSnapshot(e))
-    const t = await $.clock.now()
-    await update($, now, () => t)
+    await $.state.set(SNAP, toSnapshot(e))
+    await tick($)
     const result = await next(e)
 
-    // A window moved: the per-model ones may have too (throttled to once a minute).
+    // A window moved: the per-model ones may have too (at most once a minute).
     if (e.changed.includes('rateLimits')) {
       await refreshRemote($)
     }
@@ -284,14 +304,8 @@ export const register: Register = on => {
 
   // Every turn, subagents' included, so the totals line up with the cost.
   on('turn.complete', async ($, e, next) => {
-    const u = e.usage
-    if (u) {
-      await update($, tokens, (sum: Tokens) => ({
-        input: sum.input + u.input_tokens,
-        output: sum.output + u.output_tokens,
-        cacheRead: sum.cacheRead + u.cache_read_input_tokens,
-        cacheWrite: sum.cacheWrite + u.cache_creation_input_tokens,
-      }))
+    if (e.usage) {
+      await addTokens($, e.usage)
     }
 
     return next(e)
@@ -299,28 +313,28 @@ export const register: Register = on => {
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
-      await update($, tokens, () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }))
+      await $.state.set(TOKENS, NO_TOKENS)
     }
 
     return next(e)
   })
 
   on('command.run', { command: 'usage-bar' }, async $ => {
-    let isNowHidden = false
-    await update($, isHidden, hidden => (isNowHidden = !hidden))
+    const isNowHidden = await toggleHidden($)
 
     return { text: isNowHidden ? 'Usage bar hidden.' : 'Usage bar shown.' }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey || (await read($, isHidden))) {
+    const hidden = await $.state.get(IS_HIDDEN)
+    if (e.props.hasSurvey || hidden.value === true) {
       return next(e)
     }
 
-    const s = await read($, snap)
-    const r = await read($, remote)
-    const t = await read($, tokens)
-    const at = (await read($, now)) || (await $.clock.now())
+    const s = (await $.state.get(SNAP)).value ?? NO_SNAP
+    const r = (await $.state.get(REMOTE)).value ?? null
+    const t = (await $.state.get(TOKENS)).value ?? NO_TOKENS
+    const at = (await $.state.get(NOW)).value || (await $.clock.now())
 
     // The engine's readings are the freshest (every response); the endpoint's
     // stand in until the first one, and alone carry the per-model windows.

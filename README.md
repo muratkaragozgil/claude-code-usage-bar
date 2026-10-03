@@ -59,24 +59,29 @@ claude plugin marketplace remove claude-code-usage-bar
 
 ## How it works
 
-The plugin is a [Claude Code mod](https://claude.dev/blog/getting-started-with-claude-code-mods/): one readable TypeScript module of function hooks, [`hooks/register.tsx`](hooks/register.tsx). It runs no scripts, starts no processes, installs no packages and writes no files.
+The plugin is a [Claude Code mod](https://claude.dev/blog/getting-started-with-claude-code-mods/): one readable TypeScript module of function hooks, [`hooks/register.tsx`](hooks/register.tsx).
 
-- `session.measure` delivers the 5-hour and weekly windows and the session cost after every response, as Claude Code's own status line reads them.
-- `turn.complete` adds up each turn's token counts, subagents included. Only the counts are read, never the content of messages.
-- Per-model weekly limits are not in the API's rate-limit headers, so the plugin reads them from the usage endpoint behind the desktop app's usage card and `/usage`.
-- `ui.render` on the `AbovePrompt` site draws the row: SVG bars on the desktop, text bars in the terminal.
+Each hook, and what it does with what it sees:
 
-## Privacy and network access
+| Hook | What it does |
+| --- | --- |
+| `session.start` | Registers the `/usage-bar` command and reads the session's usage figures from Claude Code. Starts two timers: one moves the countdowns every 30 seconds, one refreshes the plan limits every five minutes. Passes the event on unchanged. |
+| `session.measure` | Copies the 5-hour and weekly percentages, their reset times and the session cost into the bar. Passes the event on unchanged. |
+| `turn.complete` | Adds the turn's token counts to the session totals, subagent turns included. It reads only the counts, never the text of the turn. Passes the event on unchanged. |
+| `session.end` | On `/clear`, sets the token totals back to zero. Passes the event on unchanged. |
+| `command.run` | Matches only `/usage-bar`, which it answers by hiding or showing the bar. It never sees, runs or changes any other command. |
+| `ui.render` | Matches only the `AbovePrompt` site, where it draws the bar: SVG bars on the desktop, text bars in the terminal. It leaves the rest of the screen to Claude Code. |
 
-The plugin makes one kind of network request: `GET https://api.anthropic.com/api/oauth/usage`, the endpoint that returns your plan's usage limits.
+## What it fetches, sends and runs
 
-- **When:** when a session starts, every five minutes, and when a limit moves, at most once a minute.
-- **Credential:** the request carries Claude Code's own credential through `$.session.authorize()`. That call returns an opaque handle, so your token never reaches the plugin.
-- **Payload:** the request has no body.
-- **Storage:** everything the plugin reads stays in Claude Code's memory for the session and is discarded when it ends. Nothing is written to disk.
-- **Third parties:** nothing is sent anywhere else, and there is no analytics or telemetry.
+- **Fetches:** `GET https://api.anthropic.com/api/oauth/usage`, Anthropic's endpoint behind the desktop app's usage card and `/usage`. It returns the plan's usage limits, including the per-model weekly ones that the API's rate-limit headers don't carry.
+  - **When:** when a session starts, every five minutes, and when a limit moves, at most once a minute.
+  - **Credential:** the request carries Claude Code's own credential through `$.session.authorize()`. That call returns an opaque handle, so your token never reaches the plugin.
+- **Sends:** only that request, which has no body. None of what the plugin reads (usage figures, token counts, cost) leaves your machine, and nothing goes to any other host.
+- **Runs:** nothing. No processes, shell commands, tools, agents or MCP calls. It installs no packages and writes no files.
+- **Keeps:** everything it reads stays in Claude Code's memory for the session and is discarded when the session ends.
 
-The full policy is in [PRIVACY.md](PRIVACY.md).
+The full privacy policy is in [PRIVACY.md](PRIVACY.md).
 
 The endpoint is undocumented and may change. If it fails, the 5-hour and weekly bars keep working from the session's own data, and a single line in the transcript says why the per-model limits are missing.
 
@@ -108,6 +113,7 @@ The tests mount the band on the terminal and desktop surfaces, with the usage en
 
 ```text
 .claude-plugin/plugin.json        the plugin manifest
+.claude-plugin/icon.png           the directory listing's icon
 .claude-plugin/marketplace.json   makes this repository a one-plugin marketplace
 hooks/hooks.json                  points Claude Code at the module
 hooks/register.tsx                the whole mod
