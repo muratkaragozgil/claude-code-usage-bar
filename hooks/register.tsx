@@ -173,14 +173,15 @@ function fmtTokens(n: number): string {
 
 function fmtLeft(ms: number): string {
   if (ms <= 0) return 'now'
-  const mins = Math.ceil(ms / 60_000)
-  const d = Math.floor(mins / 1440)
-  const h = Math.floor((mins % 1440) / 60)
-  const m = mins % 60
-  if (d > 0) return `${d}d ${h}h`
-  if (h > 0) return `${h}h ${m}m`
+  // Not `h`: in a .tsx file that name is the JSX factory.
+  const total = Math.ceil(ms / 60_000)
+  const days = Math.floor(total / 1440)
+  const hours = Math.floor((total % 1440) / 60)
+  const minutes = total % 60
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${minutes}m`
 
-  return `${m}m`
+  return `${minutes}m`
 }
 
 function toGauge(w: Window, at: number): Gauge {
